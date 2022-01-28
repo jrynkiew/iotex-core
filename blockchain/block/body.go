@@ -18,7 +18,8 @@ import (
 
 // Body defines the struct of body
 type Body struct {
-	Actions []action.SealedEnvelope
+	EvmNetworkID uint32
+	Actions      []action.SealedEnvelope
 }
 
 // Proto converts Body to Protobuf
@@ -28,6 +29,7 @@ func (b *Body) Proto() *iotextypes.BlockBody {
 		actions = append(actions, act.Proto())
 	}
 	return &iotextypes.BlockBody{
+		EvmNetworkID: b.EvmNetworkID, // new field
 		Actions: actions,
 	}
 }
@@ -39,15 +41,15 @@ func (b *Body) Serialize() ([]byte, error) {
 
 // LoadProto loads body from proto
 func (b *Body) LoadProto(pbBlock *iotextypes.BlockBody) error {
+	b.EvmNetworkID = pbBlock.EvmNetworkID // new field
 	b.Actions = []action.SealedEnvelope{}
 	for _, actPb := range pbBlock.Actions {
 		act := action.SealedEnvelope{}
-		if err := act.LoadProto(actPb); err != nil {
+		if err := act.LoadProto(actPb, b.EvmNetworkID); err != nil {
 			return err
 		}
 		b.Actions = append(b.Actions, act)
 	}
-
 	return nil
 }
 
@@ -57,7 +59,6 @@ func (b *Body) Deserialize(buf []byte) error {
 	if err := proto.Unmarshal(buf, &pb); err != nil {
 		return err
 	}
-
 	return b.LoadProto(&pb)
 }
 

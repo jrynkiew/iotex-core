@@ -8,7 +8,6 @@ import (
 	"github.com/pkg/errors"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/iotexproject/iotex-core/config"
 	"github.com/iotexproject/iotex-core/pkg/util/byteutil"
 )
 
@@ -81,7 +80,7 @@ func (sealed *SealedEnvelope) Proto() *iotextypes.Action {
 }
 
 // LoadProto loads from proto scheme.
-func (sealed *SealedEnvelope) LoadProto(pbAct *iotextypes.Action) error {
+func (sealed *SealedEnvelope) LoadProto(pbAct *iotextypes.Action, networkID uint32) error {
 	if pbAct == nil {
 		return ErrEmptyActionPool
 	}
@@ -110,10 +109,15 @@ func (sealed *SealedEnvelope) LoadProto(pbAct *iotextypes.Action) error {
 		if err != nil {
 			return err
 		}
-		if _, err = rlpSignedHash(tx, config.EVMNetworkID(), pbAct.GetSignature()); err != nil {
-			return err
+		if networkID > 0 {
+			if _, err = rlpSignedHash(tx, networkID, pbAct.GetSignature()); err != nil {
+				return err
+			}
+		} else {
+			// before 1.7
+			// try networkID = 4689, 4690, pick the one that works, or return error if neither works
 		}
-		sealed.evmNetworkID = config.EVMNetworkID()
+		sealed.evmNetworkID = networkID
 	case iotextypes.Encoding_IOTEX_PROTOBUF:
 		break
 	default:
