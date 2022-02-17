@@ -275,19 +275,23 @@ func (sf *factory) newWorkingSet(ctx context.Context, height uint64) (*workingSe
 	if err != nil {
 		return nil, err
 	}
-	for _, p := range sf.ps.Get(height) {
-		if p.Type == _Delete {
-			flusher.KVStoreWithBuffer().MustDelete(p.Namespace, p.Key)
-		} else {
-			flusher.KVStoreWithBuffer().MustPut(p.Namespace, p.Key, p.Value)
-		}
-	}
 	store, err := newFactoryWorkingSetStore(sf.protocolView, flusher)
 	if err != nil {
 		return nil, err
 	}
 	if err := store.Start(ctx); err != nil {
 		return nil, err
+	}
+	for _, p := range sf.ps.Get(height) {
+		if p.Type == _Delete {
+			if err := store.Delete(p.Namespace, p.Key); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := store.Put(p.Namespace, p.Key, p.Value); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	return newWorkingSet(height, store), nil
