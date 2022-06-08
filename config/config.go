@@ -36,7 +36,7 @@ import (
 
 var (
 	_evmNetworkID uint32
-	loadChainID   sync.Once
+	_loadChainID  sync.Once
 )
 
 const (
@@ -153,10 +153,11 @@ var (
 		},
 		Dispatcher: dispatcher.DefaultConfig,
 		API: API{
-			UseRDS:    false,
-			Port:      14014,
-			Web3Port:  15014,
-			TpsWindow: 10,
+			UseRDS:        false,
+			GRPCPort:      14014,
+			HTTPPort:      15014,
+			WebSocketPort: 16014,
+			TpsWindow:     10,
 			GasStation: GasStation{
 				SuggestBlockWindow: 20,
 				DefaultGas:         uint64(unit.Qev),
@@ -305,8 +306,9 @@ type (
 	// API is the api service config
 	API struct {
 		UseRDS          bool          `yaml:"useRDS"`
-		Port            int           `yaml:"port"`
-		Web3Port        int           `yaml:"web3port"`
+		GRPCPort        int           `yaml:"port"`
+		HTTPPort        int           `yaml:"web3port"`
+		WebSocketPort   int           `yaml:"webSocketPort"`
 		RedisCacheURL   string        `yaml:"redisCacheURL"`
 		TpsWindow       int           `yaml:"tpsWindow"`
 		GasStation      GasStation    `yaml:"gasStation"`
@@ -466,7 +468,7 @@ func NewSub(configPaths []string, validates ...Validate) (Config, error) {
 
 // SetEVMNetworkID sets the extern chain ID
 func SetEVMNetworkID(id uint32) {
-	loadChainID.Do(func() {
+	_loadChainID.Do(func() {
 		_evmNetworkID = id
 	})
 }
@@ -642,6 +644,8 @@ func ValidateForkHeights(cfg Config) error {
 		return errors.Wrap(ErrInvalidCfg, "Kamchatka is heigher than LordHowe")
 	case hu.LordHoweBlockHeight > hu.MidwayBlockHeight:
 		return errors.Wrap(ErrInvalidCfg, "LordHowe is heigher than Midway")
+	case hu.MidwayBlockHeight > hu.NewfoundlandBlockHeight:
+		return errors.Wrap(ErrInvalidCfg, "Midway is heigher than Newfoundland")
 	}
 	return nil
 }

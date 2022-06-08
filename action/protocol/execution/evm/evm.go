@@ -37,12 +37,12 @@ import (
 var (
 	// TODO: whenever ActionGasLimit is removed from genesis, we need to hard code it to 5M to make it compatible with
 	// the mainnet.
-	preAleutianActionGasLimit = genesis.Default.ActionGasLimit
+	_preAleutianActionGasLimit = genesis.Default.ActionGasLimit
 
-	inContractTransfer = hash.BytesToHash256([]byte{byte(iotextypes.TransactionLogType_IN_CONTRACT_TRANSFER)})
+	_inContractTransfer = hash.BytesToHash256([]byte{byte(iotextypes.TransactionLogType_IN_CONTRACT_TRANSFER)})
 
-	// revertSelector is a special function selector for revert reason unpacking.
-	revertSelector = crypto.Keccak256([]byte("Error(string)"))[:4]
+	// _revertSelector is a special function selector for revert reason unpacking.
+	_revertSelector = crypto.Keccak256([]byte("Error(string)"))[:4]
 
 	// ErrInconsistentNonce is the error that the nonce is different from executor's nonce
 	ErrInconsistentNonce = errors.New("Nonce is not identical to executor nonce")
@@ -60,7 +60,7 @@ func MakeTransfer(db vm.StateDB, fromHash, toHash common.Address, amount *big.In
 
 	db.AddLog(&types.Log{
 		Topics: []common.Hash{
-			common.BytesToHash(inContractTransfer[:]),
+			common.BytesToHash(_inContractTransfer[:]),
 			common.BytesToHash(fromHash[:]),
 			common.BytesToHash(toHash[:]),
 		},
@@ -95,10 +95,18 @@ func newParams(
 	featureCtx := protocol.MustGetFeatureCtx(ctx)
 	executorAddr := common.BytesToAddress(actionCtx.Caller.Bytes())
 	var contractAddrPointer *common.Address
-	if execution.Contract() != action.EmptyAddress {
-		contract, err := address.FromString(execution.Contract())
+	if dest := execution.Contract(); dest != action.EmptyAddress {
+		var (
+			contract address.Address
+			err      error
+		)
+		if featureCtx.TolerateLegacyAddress {
+			contract, err = address.FromStringLegacy(dest)
+		} else {
+			contract, err = address.FromString(dest)
+		}
 		if err != nil {
-			return nil, errors.Wrap(err, "failed to convert encoded contract address to address")
+			return nil, errors.Wrapf(err, "failed to decode contract address %s", dest)
 		}
 		contractAddr := common.BytesToAddress(contract.Bytes())
 		contractAddrPointer = &contractAddr
@@ -106,8 +114,8 @@ func newParams(
 
 	gasLimit := execution.GasLimit()
 	// Reset gas limit to the system wide action gas limit cap if it's greater than it
-	if blkCtx.BlockHeight > 0 && featureCtx.SystemWideActionGasLimit && gasLimit > preAleutianActionGasLimit {
-		gasLimit = preAleutianActionGasLimit
+	if blkCtx.BlockHeight > 0 && featureCtx.SystemWideActionGasLimit && gasLimit > _preAleutianActionGasLimit {
+		gasLimit = _preAleutianActionGasLimit
 	}
 
 	var getHashFn vm.GetHashFunc
@@ -214,7 +222,7 @@ func ExecuteContract(
 		ContractAddress: contractAddress,
 	}
 
-	receipt.Status = statusCode
+	receipt.Status = uint64(statusCode)
 	var burnLog *action.TransactionLog
 	if featureCtx.FixDoubleChargeGas {
 		// Refund all deposit and, actual gas fee will be subtracted when depositing gas fee to the rewarding protocol
@@ -252,7 +260,7 @@ func ExecuteContract(
 	}
 	stateDB.clear()
 
-	if featureCtx.SetRevertMessageToReceipt && receipt.Status == uint64(iotextypes.ReceiptStatus_ErrExecutionReverted) && retval != nil && bytes.Equal(retval[:4], revertSelector) {
+	if featureCtx.SetRevertMessageToReceipt && receipt.Status == uint64(iotextypes.ReceiptStatus_ErrExecutionReverted) && retval != nil && bytes.Equal(retval[:4], _revertSelector) {
 		// in case of the execution revert error, parse the retVal and add to receipt
 		data := retval[4:]
 		msgLength := byteutil.BytesToUint64BigEndian(data[56:64])
@@ -325,17 +333,18 @@ func getChainConfig(g genesis.Blockchain, height uint64) *params.ChainConfig {
 	if g.IsIceland(height) {
 		chainConfig.ChainID = new(big.Int).SetUint64(uint64(config.EVMNetworkID()))
 	}
-	// enable Berlin
+	// enable Berlin and London
 	chainConfig.BerlinBlock = new(big.Int).SetUint64(g.ToBeEnabledBlockHeight)
+	chainConfig.LondonBlock = new(big.Int).SetUint64(g.ToBeEnabledBlockHeight)
 	return &chainConfig
 }
 
 //Error in executeInEVM is a consensus issue
-func executeInEVM(ctx context.Context, evmParams *Params, stateDB *StateDBAdapter, g genesis.Blockchain, gasLimit uint64, blockHeight uint64) ([]byte, uint64, uint64, string, uint64, error) {
+func executeInEVM(ctx context.Context, evmParams *Params, stateDB *StateDBAdapter, g genesis.Blockchain, gasLimit uint64, blockHeight uint64) ([]byte, uint64, uint64, string, iotextypes.ReceiptStatus, error) {
 	remainingGas := evmParams.gas
 	if err := securityDeposit(evmParams, stateDB, gasLimit); err != nil {
 		log.L().Warn("unexpected error: not enough security deposit", zap.Error(err))
-		return nil, 0, 0, action.EmptyAddress, uint64(iotextypes.ReceiptStatus_Failure), err
+		return nil, 0, 0, action.EmptyAddress, iotextypes.ReceiptStatus_Failure, err
 	}
 	var (
 		config     vm.Config
@@ -351,10 +360,10 @@ func executeInEVM(ctx context.Context, evmParams *Params, stateDB *StateDBAdapte
 	}
 	intriGas, err := intrinsicGas(uint64(len(evmParams.data)), accessList)
 	if err != nil {
-		return nil, evmParams.gas, remainingGas, action.EmptyAddress, uint64(iotextypes.ReceiptStatus_Failure), err
+		return nil, evmParams.gas, remainingGas, action.EmptyAddress, iotextypes.ReceiptStatus_Failure, err
 	}
 	if remainingGas < intriGas {
-		return nil, evmParams.gas, remainingGas, action.EmptyAddress, uint64(iotextypes.ReceiptStatus_Failure), action.ErrInsufficientFunds
+		return nil, evmParams.gas, remainingGas, action.EmptyAddress, iotextypes.ReceiptStatus_Failure, action.ErrInsufficientFunds
 	}
 	remainingGas -= intriGas
 
@@ -365,8 +374,10 @@ func executeInEVM(ctx context.Context, evmParams *Params, stateDB *StateDBAdapte
 	var (
 		contractRawAddress = action.EmptyAddress
 		executor           = vm.AccountRef(evmParams.txCtx.Origin)
+		london             = evm.ChainConfig().IsLondon(evm.Context.BlockNumber)
 		ret                []byte
 		evmErr             error
+		refund             uint64
 	)
 	if evmParams.contract == nil {
 		// create contract
@@ -389,22 +400,28 @@ func executeInEVM(ctx context.Context, evmParams *Params, stateDB *StateDBAdapte
 		// sufficient balance to make the transfer happen.
 		// Should be a hard fork (Bering)
 		if evmErr == vm.ErrInsufficientBalance && g.IsBering(blockHeight) {
-			return nil, evmParams.gas, remainingGas, action.EmptyAddress, uint64(iotextypes.ReceiptStatus_Failure), evmErr
+			return nil, evmParams.gas, remainingGas, action.EmptyAddress, iotextypes.ReceiptStatus_Failure, evmErr
 		}
 	}
 	if stateDB.Error() != nil {
 		log.L().Debug("statedb error", zap.Error(stateDB.Error()))
 	}
-	refund := (evmParams.gas - remainingGas) / 2
+	if !london {
+		// Before EIP-3529: refunds were capped to gasUsed / 2
+		refund = (evmParams.gas - remainingGas) / params.RefundQuotient
+	} else {
+		// After EIP-3529: refunds are capped to gasUsed / 5
+		refund = (evmParams.gas - remainingGas) / params.RefundQuotientEIP3529
+	}
 	if refund > stateDB.GetRefund() {
 		refund = stateDB.GetRefund()
 	}
 	remainingGas += refund
 
-	errCode := uint64(iotextypes.ReceiptStatus_Success)
+	errCode := iotextypes.ReceiptStatus_Success
 	if evmErr != nil {
 		errCode = evmErrToErrStatusCode(evmErr, g, blockHeight)
-		if errCode == uint64(iotextypes.ReceiptStatus_ErrUnknown) {
+		if errCode == iotextypes.ReceiptStatus_ErrUnknown {
 			var addr string
 			if evmParams.contract != nil {
 				ioAddr, _ := address.FromBytes((*evmParams.contract)[:])
@@ -421,74 +438,57 @@ func executeInEVM(ctx context.Context, evmParams *Params, stateDB *StateDBAdapte
 }
 
 // evmErrToErrStatusCode returns ReceiptStatuscode which describes error type
-func evmErrToErrStatusCode(evmErr error, g genesis.Blockchain, height uint64) (errStatusCode uint64) {
-	if g.IsJutland(height) {
-		switch evmErr {
-		case vm.ErrOutOfGas:
-			errStatusCode = uint64(iotextypes.ReceiptStatus_ErrOutOfGas)
-		case vm.ErrCodeStoreOutOfGas:
-			errStatusCode = uint64(iotextypes.ReceiptStatus_ErrCodeStoreOutOfGas)
-		case vm.ErrDepth:
-			errStatusCode = uint64(iotextypes.ReceiptStatus_ErrDepth)
-		case vm.ErrContractAddressCollision:
-			errStatusCode = uint64(iotextypes.ReceiptStatus_ErrContractAddressCollision)
-		case vm.ErrExecutionReverted:
-			errStatusCode = uint64(iotextypes.ReceiptStatus_ErrExecutionReverted)
-		case vm.ErrMaxCodeSizeExceeded:
-			errStatusCode = uint64(iotextypes.ReceiptStatus_ErrMaxCodeSizeExceeded)
-		case vm.ErrWriteProtection:
-			errStatusCode = uint64(iotextypes.ReceiptStatus_ErrWriteProtection)
-		case vm.ErrInsufficientBalance:
-			errStatusCode = uint64(iotextypes.ReceiptStatus_ErrInsufficientBalance)
-		case vm.ErrInvalidJump:
-			errStatusCode = uint64(iotextypes.ReceiptStatus_ErrInvalidJump)
-		case vm.ErrReturnDataOutOfBounds:
-			errStatusCode = uint64(iotextypes.ReceiptStatus_ErrReturnDataOutOfBounds)
-		case vm.ErrGasUintOverflow:
-			errStatusCode = uint64(iotextypes.ReceiptStatus_ErrGasUintOverflow)
-		default:
-			//This errors from go-ethereum, are not-accessible variable.
-			switch evmErr.Error() {
-			case "no compatible interpreter":
-				errStatusCode = uint64(iotextypes.ReceiptStatus_ErrNoCompatibleInterpreter)
-			default:
-				errStatusCode = uint64(iotextypes.ReceiptStatus_ErrUnknown)
-			}
+func evmErrToErrStatusCode(evmErr error, g genesis.Blockchain, height uint64) iotextypes.ReceiptStatus {
+	// specific error starting London
+	if g.IsToBeEnabled(height) {
+		if evmErr == vm.ErrInvalidCode {
+			return iotextypes.ReceiptStatus_ErrInvalidCode
 		}
-		return
 	}
 
+	// specific error starting Jutland
+	if g.IsJutland(height) {
+		switch evmErr {
+		case vm.ErrInsufficientBalance:
+			return iotextypes.ReceiptStatus_ErrInsufficientBalance
+		case vm.ErrInvalidJump:
+			return iotextypes.ReceiptStatus_ErrInvalidJump
+		case vm.ErrReturnDataOutOfBounds:
+			return iotextypes.ReceiptStatus_ErrReturnDataOutOfBounds
+		case vm.ErrGasUintOverflow:
+			return iotextypes.ReceiptStatus_ErrGasUintOverflow
+		}
+	}
+
+	// specific error starting Bering
 	if g.IsBering(height) {
 		switch evmErr {
 		case vm.ErrOutOfGas:
-			errStatusCode = uint64(iotextypes.ReceiptStatus_ErrOutOfGas)
+			return iotextypes.ReceiptStatus_ErrOutOfGas
 		case vm.ErrCodeStoreOutOfGas:
-			errStatusCode = uint64(iotextypes.ReceiptStatus_ErrCodeStoreOutOfGas)
+			return iotextypes.ReceiptStatus_ErrCodeStoreOutOfGas
 		case vm.ErrDepth:
-			errStatusCode = uint64(iotextypes.ReceiptStatus_ErrDepth)
+			return iotextypes.ReceiptStatus_ErrDepth
 		case vm.ErrContractAddressCollision:
-			errStatusCode = uint64(iotextypes.ReceiptStatus_ErrContractAddressCollision)
+			return iotextypes.ReceiptStatus_ErrContractAddressCollision
 		case vm.ErrExecutionReverted:
-			errStatusCode = uint64(iotextypes.ReceiptStatus_ErrExecutionReverted)
+			return iotextypes.ReceiptStatus_ErrExecutionReverted
 		case vm.ErrMaxCodeSizeExceeded:
-			errStatusCode = uint64(iotextypes.ReceiptStatus_ErrMaxCodeSizeExceeded)
+			return iotextypes.ReceiptStatus_ErrMaxCodeSizeExceeded
 		case vm.ErrWriteProtection:
-			errStatusCode = uint64(iotextypes.ReceiptStatus_ErrWriteProtection)
+			return iotextypes.ReceiptStatus_ErrWriteProtection
 		default:
-			//This errors from go-ethereum, are not-accessible variable.
+			// internal errors from go-ethereum are not directly accessible
 			switch evmErr.Error() {
 			case "no compatible interpreter":
-				errStatusCode = uint64(iotextypes.ReceiptStatus_ErrNoCompatibleInterpreter)
+				return iotextypes.ReceiptStatus_ErrNoCompatibleInterpreter
 			default:
-				errStatusCode = uint64(iotextypes.ReceiptStatus_ErrUnknown)
+				return iotextypes.ReceiptStatus_ErrUnknown
 			}
 		}
-		return
 	}
-
 	// before Bering height, return one common failure
-	errStatusCode = uint64(iotextypes.ReceiptStatus_Failure)
-	return
+	return iotextypes.ReceiptStatus_Failure
 }
 
 // intrinsicGas returns the intrinsic gas of an execution

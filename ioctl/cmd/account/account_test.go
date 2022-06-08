@@ -10,7 +10,6 @@ import (
 	"crypto/ecdsa"
 	"math/rand"
 	"os"
-	"path/filepath"
 	"strconv"
 	"testing"
 
@@ -26,13 +25,14 @@ import (
 )
 
 const (
-	testPath = "ksTest"
+	_testPath = "ksTest"
 )
 
 func TestAccount(t *testing.T) {
 	r := require.New(t)
 
-	testWallet := filepath.Join(os.TempDir(), testPath)
+	testWallet, err := os.MkdirTemp(os.TempDir(), _testPath)
+	r.NoError(err)
 	defer testutil.CleanupPath(testWallet)
 	config.ReadConfig.Wallet = testWallet
 

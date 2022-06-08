@@ -16,7 +16,7 @@ import (
 )
 
 var (
-	sigTests = []struct {
+	_sigTests = []struct {
 		signer    string
 		recipient string
 		msg       string
@@ -53,7 +53,7 @@ var (
 func TestVerifyEccSig(t *testing.T) {
 	r := require.New(t)
 
-	for _, v := range sigTests {
+	for _, v := range _sigTests {
 		sig, _ := hex.DecodeString(v.sig)
 		pk, err := RecoverPubkeyFromEccSig("Ethereum", []byte(v.msg), sig)
 		r.NoError(err)
@@ -63,7 +63,7 @@ func TestVerifyEccSig(t *testing.T) {
 	}
 
 	// test with modified signature
-	for _, v := range sigTests {
+	for _, v := range _sigTests {
 		sig, _ := hex.DecodeString(v.sig)
 		sig[rand.Intn(len(sig))]++
 		pk, err := RecoverPubkeyFromEccSig("Ethereum", []byte(v.msg), sig)
@@ -77,14 +77,14 @@ func TestConsignmentTransfer(t *testing.T) {
 	r := require.New(t)
 
 	// generate payload from tests
-	v := sigTests[2]
+	v := _sigTests[2]
 	_, err := NewConsignJSON("Trezor", v.recipient, v.sig, 47, 136)
 	r.Equal(ErrNotSupported, err)
 	b, err := NewConsignJSON("Ethereum", v.recipient, v.sig, 47, 136)
 	r.NoError(err)
 
 	// process the payload as a consignment transfer
-	con, err := NewConsignment(b)
+	con, err := NewConsignment(b, false)
 	r.NoError(err)
 	r.Equal(v.signer, hex.EncodeToString(con.Transferor().Bytes()))
 	r.Equal(v.recipient, con.Transferee().String())
@@ -99,7 +99,7 @@ func TestConsignmentTransfer(t *testing.T) {
 	}
 	b, err = json.Marshal(c)
 	r.NoError(err)
-	con, err = NewConsignment(b)
+	con, err = NewConsignment(b, false)
 	r.Equal(ErrNotSupported, err)
 	r.Nil(con)
 }

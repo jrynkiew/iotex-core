@@ -32,8 +32,8 @@ import (
 var Default = defaultConfig()
 
 var (
-	genesisTs     int64
-	loadGenesisTs sync.Once
+	_genesisTs     int64
+	_loadGenesisTs sync.Once
 )
 
 func init() {
@@ -68,6 +68,7 @@ func defaultConfig() Genesis {
 			KamchatkaBlockHeight:    13816441,
 			LordHoweBlockHeight:     13979161,
 			MidwayBlockHeight:       16509241,
+			NewfoundlandBlockHeight: 17662681,
 			ToBeEnabledBlockHeight:  math.MaxUint64,
 		},
 		Account: Account{
@@ -207,6 +208,11 @@ type (
 		// 3. correct tx/log index for transaction receipt and EVM log
 		// 4. revert logs upon tx reversion in EVM
 		MidwayBlockHeight uint64 `yaml:"midwayHeight"`
+		// NewfoundlandBlockHeight is the start height to
+		// 1. use correct chainID
+		// 2. check legacy address
+		// 3. enable web3 staking transaction
+		NewfoundlandBlockHeight uint64 `yaml:"newfoundlandHeight"`
 		// ToBeEnabledBlockHeight is a fake height that acts as a gating factor for WIP features
 		// upon next release, change IsToBeEnabled() to IsNextHeight() for features to be released
 		ToBeEnabledBlockHeight uint64 `yaml:"toBeEnabledHeight"`
@@ -347,14 +353,14 @@ func New(genesisPath string) (Genesis, error) {
 
 // SetGenesisTimestamp sets the genesis timestamp
 func SetGenesisTimestamp(ts int64) {
-	loadGenesisTs.Do(func() {
-		genesisTs = ts
+	_loadGenesisTs.Do(func() {
+		_genesisTs = ts
 	})
 }
 
 // Timestamp returns the genesis timestamp
 func Timestamp() int64 {
-	return atomic.LoadInt64(&genesisTs)
+	return atomic.LoadInt64(&_genesisTs)
 }
 
 // Hash is the hash of genesis config
@@ -510,6 +516,11 @@ func (g *Blockchain) IsLordHowe(height uint64) bool {
 // IsMidway checks whether height is equal to or larger than midway height
 func (g *Blockchain) IsMidway(height uint64) bool {
 	return g.isPost(g.MidwayBlockHeight, height)
+}
+
+// IsNewfoundland checks whether height is equal to or larger than newfoundland height
+func (g *Blockchain) IsNewfoundland(height uint64) bool {
+	return g.isPost(g.NewfoundlandBlockHeight, height)
 }
 
 // IsToBeEnabled checks whether height is equal to or larger than toBeEnabled height

@@ -1,4 +1,4 @@
-// Copyright (c) 2020 IoTeX Foundation
+// Copyright (c) 2022 IoTeX Foundation
 // This is an alpha (internal) release and is not suitable for production. This source code is provided 'as is' and no
 // warranties are given as to title or non-infringement, merchantability or fitness for purpose and, to the extent
 // permitted by law, all liability for your use of the code is disclaimed. This source code is governed by Apache
@@ -58,7 +58,7 @@ var (
 	// ErrNoArchiveData is the error that the node have no archive data
 	ErrNoArchiveData = errors.New("no archive data")
 
-	dbBatchSizelMtc = prometheus.NewGaugeVec(
+	_dbBatchSizelMtc = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "iotex_db_batch_size",
 			Help: "DB batch size",
@@ -68,7 +68,7 @@ var (
 )
 
 func init() {
-	prometheus.MustRegister(dbBatchSizelMtc)
+	prometheus.MustRegister(_dbBatchSizelMtc)
 }
 
 type (
@@ -83,7 +83,7 @@ type (
 		SimulateExecution(context.Context, address.Address, *action.Execution, evm.GetBlockHash) ([]byte, *action.Receipt, error)
 		ReadContractStorage(context.Context, address.Address, []byte) ([]byte, error)
 		PutBlock(context.Context, *block.Block) error
-		DeleteTipBlock(*block.Block) error
+		DeleteTipBlock(context.Context, *block.Block) error
 		StateAtHeight(uint64, interface{}, ...protocol.StateOption) error
 		StatesAtHeight(uint64, ...protocol.StateOption) (state.Iterator, error)
 	}
@@ -497,7 +497,7 @@ func (sf *factory) PutBlock(ctx context.Context, blk *block.Block) error {
 	return nil
 }
 
-func (sf *factory) DeleteTipBlock(_ *block.Block) error {
+func (sf *factory) DeleteTipBlock(_ context.Context, _ *block.Block) error {
 	return errors.Wrap(ErrNotSupported, "cannot delete tip block from factory")
 }
 

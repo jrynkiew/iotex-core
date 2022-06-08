@@ -1,3 +1,9 @@
+// Copyright (c) 2022 IoTeX Foundation
+// This is an alpha (internal) release and is not suitable for production. This source code is provided 'as is' and no
+// warranties are given as to title or non-infringement, merchantability or fitness for purpose and, to the extent
+// permitted by law, all liability for your use of the code is disclaimed. This source code is governed by Apache
+// License 2.0 that can be found in the LICENSE file.
+
 package api
 
 import (
@@ -22,10 +28,11 @@ import (
 
 // ServerV2 provides api for user to interact with blockchain data
 type ServerV2 struct {
-	core       CoreService
-	GrpcServer *GRPCServer
-	web3Server *Web3Server
-	tracer     *tracesdk.TracerProvider
+	core         CoreService
+	GrpcServer   *GRPCServer
+	httpSvr      *HTTPServer
+	websocketSvr *WebsocketServer
+	tracer       *tracesdk.TracerProvider
 }
 
 // Config represents the config to setup api
@@ -57,14 +64,6 @@ func WithNativeElection(committee committee.Committee) Option {
 	}
 }
 
-// WithActionIndex is the option which enables action index related features
-func WithActionIndex() Option {
-	return func(cfg *Config) error {
-		cfg.hasActionIndex = true
-		return nil
-	}
-}
-
 // NewServerV2 creates a new server with coreService and GRPC Server
 func NewServerV2(
 	cfg config.API,
@@ -82,6 +81,8 @@ func NewServerV2(
 	if err != nil {
 		return nil, err
 	}
+	web3Handler := NewWeb3Handler(coreAPI, cfg.RedisCacheURL)
+
 	tp, err := tracer.NewProvider(
 		tracer.WithServiceName(cfg.Tracer.ServiceName),
 		tracer.WithEndpoint(cfg.Tracer.EndPoint),
@@ -92,10 +93,11 @@ func NewServerV2(
 		return nil, errors.Wrapf(err, "cannot config tracer provider")
 	}
 	return &ServerV2{
-		core:       coreAPI,
-		GrpcServer: NewGRPCServer(coreAPI, cfg.Port),
-		web3Server: NewWeb3Server(coreAPI, cfg.Web3Port, cfg.RedisCacheURL, cfg.RangeQueryLimit),
-		tracer:     tp,
+		core:         coreAPI,
+		GrpcServer:   NewGRPCServer(coreAPI, cfg.GRPCPort),
+		httpSvr:      NewHTTPServer("", cfg.HTTPPort, web3Handler),
+		websocketSvr: NewWebSocketServer("", cfg.WebSocketPort, web3Handler),
+		tracer:       tp,
 	}, nil
 }
 
@@ -104,10 +106,21 @@ func (svr *ServerV2) Start(ctx context.Context) error {
 	if err := svr.core.Start(ctx); err != nil {
 		return err
 	}
-	if err := svr.GrpcServer.Start(ctx); err != nil {
-		return err
+	if svr.GrpcServer != nil {
+		if err := svr.GrpcServer.Start(ctx); err != nil {
+			return err
+		}
 	}
-	svr.web3Server.Start(ctx)
+	if svr.httpSvr != nil {
+		if err := svr.httpSvr.Start(ctx); err != nil {
+			return err
+		}
+	}
+	if svr.websocketSvr != nil {
+		if err := svr.websocketSvr.Start(ctx); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -118,11 +131,20 @@ func (svr *ServerV2) Stop(ctx context.Context) error {
 			return errors.Wrap(err, "failed to shutdown api tracer")
 		}
 	}
-	if err := svr.web3Server.Stop(ctx); err != nil {
-		return err
+	if svr.websocketSvr != nil {
+		if err := svr.websocketSvr.Stop(ctx); err != nil {
+			return err
+		}
 	}
-	if err := svr.GrpcServer.Stop(ctx); err != nil {
-		return err
+	if svr.httpSvr != nil {
+		if err := svr.httpSvr.Stop(ctx); err != nil {
+			return err
+		}
+	}
+	if svr.GrpcServer != nil {
+		if err := svr.GrpcServer.Stop(ctx); err != nil {
+			return err
+		}
 	}
 	if err := svr.core.Stop(ctx); err != nil {
 		return err
@@ -133,4 +155,9 @@ func (svr *ServerV2) Stop(ctx context.Context) error {
 // ReceiveBlock receives the new block
 func (svr *ServerV2) ReceiveBlock(blk *block.Block) error {
 	return svr.core.ReceiveBlock(blk)
+}
+
+// CoreService returns the coreservice of the api
+func (svr *ServerV2) CoreService() CoreService {
+	return svr.core
 }

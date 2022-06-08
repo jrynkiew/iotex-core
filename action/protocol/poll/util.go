@@ -169,7 +169,11 @@ func setCandidates(
 	}
 	loadCandidatesLegacy := featureCtx.LoadCandidatesLegacy(height)
 	for _, candidate := range candidates {
-		delegate, err := accountutil.LoadOrCreateAccount(sm, candidate.Address)
+		addr, err := address.FromString(candidate.Address)
+		if err != nil {
+			return errors.Wrapf(err, "failed to decode delegate address %s", candidate.Address)
+		}
+		delegate, err := accountutil.LoadOrCreateAccount(sm, addr)
 		if err != nil {
 			return errors.Wrapf(err, "failed to load or create the account for delegate %s", candidate.Address)
 		}
@@ -318,9 +322,9 @@ func setCurrentBlockMeta(
 
 // allBlockMetasFromDB returns all latest block meta structs
 func allBlockMetasFromDB(sr protocol.StateReader, blocksInEpoch uint64) ([]*BlockMeta, error) {
-	keys := [][]byte{blockMetaKey(math.MaxUint64, blocksInEpoch)}
+	keys := make([][]byte, blocksInEpoch)
 	for i := uint64(0); i < blocksInEpoch; i++ {
-		keys = append(keys, blockMetaKey(i, blocksInEpoch))
+		keys[i] = blockMetaKey(i, blocksInEpoch)
 	}
 	stateHeight, iter, err := sr.States(
 		protocol.NamespaceOption(protocol.SystemNamespace),
@@ -352,7 +356,7 @@ func allBlockMetasFromDB(sr protocol.StateReader, blocksInEpoch uint64) ([]*Bloc
 
 // blockMetaKey returns key for storing block meta with prefix
 func blockMetaKey(blkHeight uint64, blocksInEpoch uint64) []byte {
-	prefixKey := candidatesutil.ConstructKey(blockMetaPrefix)
+	prefixKey := candidatesutil.ConstructKey(_blockMetaPrefix)
 	if blkHeight == math.MaxUint64 {
 		return append(prefixKey[:], byteutil.Uint64ToBytesBigEndian(blocksInEpoch)...)
 	}

@@ -5,17 +5,17 @@ import (
 
 	"github.com/golang/mock/gomock"
 	"github.com/iotexproject/iotex-proto/golang/iotexapi"
+	"github.com/iotexproject/iotex-proto/golang/iotexapi/mock_iotexapi"
 	"github.com/iotexproject/iotex-proto/golang/iotextypes"
 	"github.com/stretchr/testify/require"
 
 	"github.com/iotexproject/iotex-core/ioctl/config"
 	"github.com/iotexproject/iotex-core/ioctl/util"
-	"github.com/iotexproject/iotex-core/test/mock/mock_apiserviceclient"
 	"github.com/iotexproject/iotex-core/test/mock/mock_ioctlclient"
 )
 
 func TestNewNodeDelegateCmd(t *testing.T) {
-
+	require := require.New(t)
 	ctrl := gomock.NewController(t)
 
 	client := mock_ioctlclient.NewMockClient(ctrl)
@@ -29,7 +29,7 @@ func TestNewNodeDelegateCmd(t *testing.T) {
 		"io1uwnr55vqmhf3xeg5phgurlyl702af6eju542sx": "io1uwnr55vqmhf3xeg5phgurlyl702af6eju542sx",
 	}).AnyTimes()
 
-	apiServiceClient := mock_apiserviceclient.NewMockServiceClient(ctrl)
+	apiServiceClient := mock_iotexapi.NewMockAPIServiceClient(ctrl)
 	client.EXPECT().APIServiceClient(gomock.Any()).Return(
 		apiServiceClient, nil).AnyTimes()
 
@@ -80,9 +80,19 @@ func TestNewNodeDelegateCmd(t *testing.T) {
 	probationList := &iotexapi.ReadStateResponse{}
 	apiServiceClient.EXPECT().ReadState(gomock.Any(), gomock.Any()).Return(probationList, nil).AnyTimes()
 
-	cmd := NewNodeDelegateCmd(client)
+	t.Run("next epoch", func(t *testing.T) {
+		cmd := NewNodeDelegateCmd(client)
+		result, err := util.ExecuteCmd(cmd, "-n", "-e", "1")
+		require.NoError(err)
+		require.Contains(result, "Epoch: 7001")
+	})
 
-	result, err := util.ExecuteCmd(cmd)
-	require.NotNil(t, result)
-	require.NoError(t, err)
+	t.Run("get zero delegate epoch", func(t *testing.T) {
+		cmd := NewNodeDelegateCmd(client)
+		result, err := util.ExecuteCmd(cmd)
+		require.NoError(err)
+		require.Contains(result, "io1kr8c6krd7dhxaaqwdkr6erqgu4z0scug3drgja")
+		require.Contains(result, "109510794.521770016955545668")
+
+	})
 }

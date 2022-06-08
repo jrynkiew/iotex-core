@@ -101,6 +101,8 @@ type (
 		CorrectGetHashFn            bool
 		CorrectTxLogIndex           bool
 		RevertLog                   bool
+		TolerateLegacyAddress       bool
+		ValidateRewardProtocol      bool
 	}
 
 	// FeatureWithHeightCtx provides feature check functions.
@@ -228,6 +230,8 @@ func WithFeatureCtx(ctx context.Context) context.Context {
 			CorrectGetHashFn:            g.IsMidway(height),
 			CorrectTxLogIndex:           g.IsMidway(height),
 			RevertLog:                   g.IsMidway(height),
+			TolerateLegacyAddress:       !g.IsNewfoundland(height),
+			ValidateRewardProtocol:      g.IsNewfoundland(height),
 		},
 	)
 }
