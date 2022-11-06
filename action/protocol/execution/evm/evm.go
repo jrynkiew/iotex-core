@@ -28,7 +28,6 @@ import (
 	"github.com/iotexproject/iotex-core/action"
 	"github.com/iotexproject/iotex-core/action/protocol"
 	"github.com/iotexproject/iotex-core/blockchain/genesis"
-	"github.com/iotexproject/iotex-core/config"
 	"github.com/iotexproject/iotex-core/pkg/log"
 	"github.com/iotexproject/iotex-core/pkg/tracer"
 	"github.com/iotexproject/iotex-core/pkg/util/byteutil"
@@ -74,6 +73,7 @@ type (
 		context            vm.BlockContext
 		txCtx              vm.TxContext
 		nonce              uint64
+		evmNetworkID       uint32
 		executorRawAddress string
 		amount             *big.Int
 		contract           *common.Address
@@ -96,15 +96,7 @@ func newParams(
 	executorAddr := common.BytesToAddress(actionCtx.Caller.Bytes())
 	var contractAddrPointer *common.Address
 	if dest := execution.Contract(); dest != action.EmptyAddress {
-		var (
-			contract address.Address
-			err      error
-		)
-		if featureCtx.TolerateLegacyAddress {
-			contract, err = address.FromStringLegacy(dest)
-		} else {
-			contract, err = address.FromString(dest)
-		}
+		contract, err := address.FromString(execution.Contract())
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to decode contract address %s", dest)
 		}
@@ -152,10 +144,11 @@ func newParams(
 		Transfer:    MakeTransfer,
 		GetHash:     getHashFn,
 		Coinbase:    common.BytesToAddress(blkCtx.Producer.Bytes()),
+		GasLimit:    gasLimit,
 		BlockNumber: new(big.Int).SetUint64(blkCtx.BlockHeight),
 		Time:        new(big.Int).SetInt64(blkCtx.BlockTimeStamp.Unix()),
 		Difficulty:  new(big.Int).SetUint64(uint64(50)),
-		GasLimit:    gasLimit,
+		BaseFee:     new(big.Int),
 	}
 
 	return &Params{
@@ -165,6 +158,7 @@ func newParams(
 			GasPrice: execution.GasPrice(),
 		},
 		execution.Nonce(),
+		protocol.MustGetBlockchainCtx(ctx).EvmNetworkID,
 		actionCtx.Caller.String(),
 		execution.Amount(),
 		contractAddrPointer,
@@ -206,7 +200,10 @@ func ExecuteContract(
 	blkCtx := protocol.MustGetBlockCtx(ctx)
 	g := genesis.MustExtractGenesisContext(ctx)
 	featureCtx := protocol.MustGetFeatureCtx(ctx)
-	stateDB := prepareStateDB(ctx, sm)
+	stateDB, err := prepareStateDB(ctx, sm)
+	if err != nil {
+		return nil, nil, err
+	}
 	ps, err := newParams(ctx, execution, stateDB, getBlockHash)
 	if err != nil {
 		return nil, nil, err
@@ -287,18 +284,24 @@ func ReadContractStorage(
 			BlockHeight: bcCtx.Tip.Height + 1,
 		},
 	))
-	stateDB := prepareStateDB(ctx, sm)
+	stateDB, err := prepareStateDB(ctx, sm)
+	if err != nil {
+		return nil, err
+	}
 	res := stateDB.GetState(common.BytesToAddress(contract.Bytes()), common.BytesToHash(key))
 	return res[:], nil
 }
 
-func prepareStateDB(ctx context.Context, sm protocol.StateManager) *StateDBAdapter {
+func prepareStateDB(ctx context.Context, sm protocol.StateManager) (*StateDBAdapter, error) {
 	actionCtx := protocol.MustGetActionCtx(ctx)
 	blkCtx := protocol.MustGetBlockCtx(ctx)
 	featureCtx := protocol.MustGetFeatureCtx(ctx)
 	opts := []StateDBAdapterOption{}
-	if featureCtx.UsePendingNonceOption {
-		opts = append(opts, SortCachedContractsOption(), UsePendingNonceOption())
+	if featureCtx.CreateLegacyNonceAccount {
+		opts = append(opts, LegacyNonceAccountOption())
+	}
+	if !featureCtx.FixSortCacheContractsAndUsePendingNonce {
+		opts = append(opts, DisableSortCachedContractsOption(), UseConfirmedNonceOption())
 	}
 	if featureCtx.NotFixTopicCopyBug {
 		opts = append(opts, NotFixTopicCopyBugOption())
@@ -312,6 +315,12 @@ func prepareStateDB(ctx context.Context, sm protocol.StateManager) *StateDBAdapt
 	if featureCtx.RevertLog {
 		opts = append(opts, RevertLogOption())
 	}
+	if !featureCtx.FixUnproductiveDelegates {
+		opts = append(opts, NotCheckPutStateErrorOption())
+	}
+	if !featureCtx.CorrectGasRefund {
+		opts = append(opts, NotCorrectGasRefundOption())
+	}
 
 	return NewStateDBAdapter(
 		sm,
@@ -321,7 +330,7 @@ func prepareStateDB(ctx context.Context, sm protocol.StateManager) *StateDBAdapt
 	)
 }
 
-func getChainConfig(g genesis.Blockchain, height uint64) *params.ChainConfig {
+func getChainConfig(g genesis.Blockchain, height uint64, id uint32) *params.ChainConfig {
 	var chainConfig params.ChainConfig
 	chainConfig.ConstantinopleBlock = new(big.Int).SetUint64(0) // Constantinople switch block (nil = no fork, 0 = already activated)
 	chainConfig.BeringBlock = new(big.Int).SetUint64(g.BeringBlockHeight)
@@ -331,15 +340,15 @@ func getChainConfig(g genesis.Blockchain, height uint64) *params.ChainConfig {
 	chainConfig.IstanbulBlock = new(big.Int).SetUint64(g.IcelandBlockHeight)
 	chainConfig.MuirGlacierBlock = new(big.Int).SetUint64(g.IcelandBlockHeight)
 	if g.IsIceland(height) {
-		chainConfig.ChainID = new(big.Int).SetUint64(uint64(config.EVMNetworkID()))
+		chainConfig.ChainID = new(big.Int).SetUint64(uint64(id))
 	}
 	// enable Berlin and London
-	chainConfig.BerlinBlock = new(big.Int).SetUint64(g.ToBeEnabledBlockHeight)
-	chainConfig.LondonBlock = new(big.Int).SetUint64(g.ToBeEnabledBlockHeight)
+	chainConfig.BerlinBlock = new(big.Int).SetUint64(g.OkhotskBlockHeight)
+	chainConfig.LondonBlock = new(big.Int).SetUint64(g.OkhotskBlockHeight)
 	return &chainConfig
 }
 
-//Error in executeInEVM is a consensus issue
+// Error in executeInEVM is a consensus issue
 func executeInEVM(ctx context.Context, evmParams *Params, stateDB *StateDBAdapter, g genesis.Blockchain, gasLimit uint64, blockHeight uint64) ([]byte, uint64, uint64, string, iotextypes.ReceiptStatus, error) {
 	remainingGas := evmParams.gas
 	if err := securityDeposit(evmParams, stateDB, gasLimit); err != nil {
@@ -353,9 +362,9 @@ func executeInEVM(ctx context.Context, evmParams *Params, stateDB *StateDBAdapte
 	if vmCfg, ok := protocol.GetVMConfigCtx(ctx); ok {
 		config = vmCfg
 	}
-	chainConfig := getChainConfig(g, blockHeight)
+	chainConfig := getChainConfig(g, blockHeight, evmParams.evmNetworkID)
 	evm := vm.NewEVM(evmParams.context, evmParams.txCtx, stateDB, chainConfig, config)
-	if g.IsToBeEnabled(blockHeight) {
+	if g.IsOkhotsk(blockHeight) {
 		accessList = evmParams.accessList
 	}
 	intriGas, err := intrinsicGas(uint64(len(evmParams.data)), accessList)
@@ -368,7 +377,7 @@ func executeInEVM(ctx context.Context, evmParams *Params, stateDB *StateDBAdapte
 	remainingGas -= intriGas
 
 	// Set up the initial access list
-	if rules := chainConfig.Rules(evm.Context.BlockNumber); rules.IsBerlin {
+	if rules := chainConfig.Rules(evm.Context.BlockNumber, false); rules.IsBerlin {
 		stateDB.PrepareAccessList(evmParams.txCtx.Origin, evmParams.contract, vm.ActivePrecompiles(rules), evmParams.accessList)
 	}
 	var (
@@ -413,6 +422,19 @@ func executeInEVM(ctx context.Context, evmParams *Params, stateDB *StateDBAdapte
 		// After EIP-3529: refunds are capped to gasUsed / 5
 		refund = (evmParams.gas - remainingGas) / params.RefundQuotientEIP3529
 	}
+	// adjust refund due to dynamicGas
+	var (
+		refundLastSnapshot = stateDB.RefundAtLastSnapshot()
+		currentRefund      = stateDB.GetRefund()
+		featureCtx         = protocol.MustGetFeatureCtx(ctx)
+	)
+	if evmErr != nil && !featureCtx.CorrectGasRefund && refundLastSnapshot > 0 && refundLastSnapshot != currentRefund {
+		if refundLastSnapshot > currentRefund {
+			stateDB.AddRefund(refundLastSnapshot - currentRefund)
+		} else {
+			stateDB.SubRefund(currentRefund - refundLastSnapshot)
+		}
+	}
 	if refund > stateDB.GetRefund() {
 		refund = stateDB.GetRefund()
 	}
@@ -440,7 +462,7 @@ func executeInEVM(ctx context.Context, evmParams *Params, stateDB *StateDBAdapte
 // evmErrToErrStatusCode returns ReceiptStatuscode which describes error type
 func evmErrToErrStatusCode(evmErr error, g genesis.Blockchain, height uint64) iotextypes.ReceiptStatus {
 	// specific error starting London
-	if g.IsToBeEnabled(height) {
+	if g.IsOkhotsk(height) {
 		if evmErr == vm.ErrInvalidCode {
 			return iotextypes.ReceiptStatus_ErrInvalidCode
 		}

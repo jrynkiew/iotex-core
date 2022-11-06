@@ -26,7 +26,10 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
+	"github.com/iotexproject/iotex-core/action/protocol"
+	"github.com/iotexproject/iotex-core/action/protocol/rewarding"
 	"github.com/iotexproject/iotex-core/blockchain"
+	"github.com/iotexproject/iotex-core/blockchain/genesis"
 	"github.com/iotexproject/iotex-core/config"
 	"github.com/iotexproject/iotex-core/pkg/log"
 	"github.com/iotexproject/iotex-core/pkg/probe"
@@ -390,6 +393,42 @@ func main() {
 
 			log.S().Info("Fp token transfer test pass!")
 		}
+
+		registries := make([]*protocol.Registry, _numNodes)
+		for i := 0; i < _numNodes; i++ {
+			registries[i] = svrs[i].ChainService(configs[i].Chain.ID).Registry()
+
+			ctx := protocol.WithBlockCtx(context.Background(), protocol.BlockCtx{
+				BlockHeight: bcHeights[i],
+			})
+			ctx = genesis.WithGenesisContext(
+				protocol.WithRegistry(ctx, registries[i]),
+				chains[i].Genesis(),
+			)
+			ctx = protocol.WithFeatureCtx(protocol.WithFeatureWithHeightCtx(ctx))
+
+			rp := rewarding.FindProtocol(registries[i])
+			if rp == nil {
+				log.S().Fatal("rolldpos is not registered.")
+			}
+
+			blockReward, err := rp.BlockReward(ctx, sfs[i])
+			if err != nil {
+				log.S().Fatal("Failed to get block reward.", zap.Error(err))
+			}
+			if blockReward == configs[i].Genesis.BlockReward() {
+				log.S().Fatal("actual block reward is incorrect.")
+			}
+
+			epochReward, err := rp.EpochReward(ctx, sfs[i])
+			if err != nil {
+				log.S().Fatal("Failed to get epoch reward.", zap.Error(err))
+			}
+			if epochReward == configs[i].Genesis.AleutianEpochReward() {
+				log.S().Fatal("actual epoch reward is incorrect.")
+			}
+		}
+
 		deleteDBFiles = true
 	}
 }
@@ -412,7 +451,6 @@ func newConfig(
 	cfg.Network.BootstrapNodes = []string{"/ip4/127.0.0.1/tcp/4689/ipfs/12D3KooWJwW6pUpTkxPTMv84RPLPMQVEAjZ6fvJuX4oZrvW5DAGQ"}
 
 	cfg.Chain.ID = 1
-	cfg.Chain.CompressBlock = true
 	cfg.Chain.ProducerPrivKey = producerPriKey.HexString()
 
 	cfg.ActPool.MinGasPriceStr = big.NewInt(0).String()
@@ -438,5 +476,6 @@ func newConfig(
 	cfg.Genesis.Delegates = cfg.Genesis.Delegates[3 : _numNodes+3]
 	cfg.Genesis.EnableGravityChainVoting = false
 	cfg.Genesis.PollMode = "lifeLong"
+
 	return cfg
 }

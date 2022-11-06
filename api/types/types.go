@@ -1,6 +1,9 @@
 package apitypes
 
-import "github.com/iotexproject/iotex-core/blockchain/block"
+import (
+	"github.com/iotexproject/iotex-core/action"
+	"github.com/iotexproject/iotex-core/blockchain/block"
+)
 
 type (
 	// Web3ResponseWriter is writer for web3 request
@@ -21,6 +24,12 @@ type (
 		ReceiveBlock(*block.Block) error
 		AddResponder(Responder) (string, error)
 		RemoveResponder(string) (bool, error)
+	}
+
+	// BlockWithReceipts includes block and its receipts
+	BlockWithReceipts struct {
+		Block    *block.Block
+		Receipts []*action.Receipt
 	}
 )
 

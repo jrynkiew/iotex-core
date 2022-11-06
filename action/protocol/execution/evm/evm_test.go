@@ -23,7 +23,6 @@ import (
 	"github.com/iotexproject/iotex-core/action"
 	"github.com/iotexproject/iotex-core/action/protocol"
 	"github.com/iotexproject/iotex-core/blockchain/genesis"
-	"github.com/iotexproject/iotex-core/config"
 	"github.com/iotexproject/iotex-core/state"
 	"github.com/iotexproject/iotex-core/test/identityset"
 	"github.com/iotexproject/iotex-core/test/mock/mock_chainmanager"
@@ -57,7 +56,10 @@ func TestExecuteContractFailure(t *testing.T) {
 	})
 	ctx = genesis.WithGenesisContext(ctx, genesis.Default)
 
-	ctx = protocol.WithFeatureCtx(ctx)
+	ctx = protocol.WithBlockchainCtx(protocol.WithFeatureCtx(ctx), protocol.BlockchainCtx{
+		ChainID:      1,
+		EvmNetworkID: 100,
+	})
 	retval, receipt, err := ExecuteContract(ctx, sm, e,
 		func(uint64) (hash.Hash256, error) {
 			return hash.ZeroHash256, nil
@@ -80,8 +82,12 @@ func TestConstantinople(t *testing.T) {
 		Caller: identityset.Address(27),
 	})
 
+	evmNetworkID := uint32(100)
 	g := genesis.Default
-	ctx = genesis.WithGenesisContext(ctx, g)
+	ctx = protocol.WithBlockchainCtx(genesis.WithGenesisContext(ctx, g), protocol.BlockchainCtx{
+		ChainID:      1,
+		EvmNetworkID: evmNetworkID,
+	})
 
 	execHeights := []struct {
 		contract string
@@ -177,10 +183,28 @@ func TestConstantinople(t *testing.T) {
 			"io1pcg2ja9krrhujpazswgz77ss46xgt88afqlk6y",
 			16509240,
 		},
-		// after Midway
+		// Midway - NewFoundland
 		{
 			action.EmptyAddress,
 			16509241,
+		},
+		{
+			"io1pcg2ja9krrhujpazswgz77ss46xgt88afqlk6y",
+			17662680,
+		},
+		// NewFoundland - Okhotsk
+		{
+			action.EmptyAddress,
+			17662681,
+		},
+		{
+			"io1pcg2ja9krrhujpazswgz77ss46xgt88afqlk6y",
+			37662680,
+		},
+		// after Okhotsk
+		{
+			action.EmptyAddress,
+			37662681,
 		},
 		{
 			"io1pcg2ja9krrhujpazswgz77ss46xgt88afqlk6y",
@@ -208,21 +232,22 @@ func TestConstantinople(t *testing.T) {
 		if g.IsKamchatka(e.height) {
 			opt = append(opt, FixSnapshotOrderOption())
 		}
-		stateDB := NewStateDBAdapter(sm, e.height, hash.ZeroHash256, opt...)
+		stateDB, err := NewStateDBAdapter(sm, e.height, hash.ZeroHash256, opt...)
+		require.NoError(err)
 
-		ctx = protocol.WithBlockCtx(ctx, protocol.BlockCtx{
+		fCtx := protocol.WithBlockCtx(ctx, protocol.BlockCtx{
 			Producer:    identityset.Address(27),
 			GasLimit:    testutil.TestGasLimit,
 			BlockHeight: e.height,
 		})
-		ctx = protocol.WithFeatureCtx(ctx)
-		ps, err := newParams(ctx, ex, stateDB, func(uint64) (hash.Hash256, error) {
+		fCtx = protocol.WithFeatureCtx(fCtx)
+		ps, err := newParams(fCtx, ex, stateDB, func(uint64) (hash.Hash256, error) {
 			return hash.ZeroHash256, nil
 		})
 		require.NoError(err)
 
 		var evmConfig vm.Config
-		chainConfig := getChainConfig(g.Blockchain, e.height)
+		chainConfig := getChainConfig(g.Blockchain, e.height, ps.evmNetworkID)
 		evm := vm.NewEVM(ps.context, ps.txCtx, stateDB, chainConfig, evmConfig)
 
 		evmChainConfig := evm.ChainConfig()
@@ -236,7 +261,7 @@ func TestConstantinople(t *testing.T) {
 		require.True(evmChainConfig.IsPetersburg(evm.Context.BlockNumber))
 
 		// verify chainRules
-		chainRules := evmChainConfig.Rules(ps.context.BlockNumber)
+		chainRules := evmChainConfig.Rules(ps.context.BlockNumber, false)
 		require.Equal(g.IsGreenland(e.height), chainRules.IsHomestead)
 		require.Equal(g.IsGreenland(e.height), chainRules.IsEIP150)
 		require.Equal(g.IsGreenland(e.height), chainRules.IsEIP158)
@@ -248,12 +273,11 @@ func TestConstantinople(t *testing.T) {
 		// verify iotex configs in chain config block
 		require.Equal(big.NewInt(int64(g.BeringBlockHeight)), evmChainConfig.BeringBlock)
 		require.Equal(big.NewInt(int64(g.GreenlandBlockHeight)), evmChainConfig.GreenlandBlock)
-		require.Equal(!g.IsBering(e.height), evm.IsPreBering())
 
 		// iceland = support chainID + enable Istanbul and Muir Glacier
 		isIceland := g.IsIceland(e.height)
 		if isIceland {
-			require.EqualValues(config.EVMNetworkID(), evmChainConfig.ChainID.Uint64())
+			require.EqualValues(evmNetworkID, evmChainConfig.ChainID.Uint64())
 		} else {
 			require.Nil(evmChainConfig.ChainID)
 		}
@@ -263,15 +287,16 @@ func TestConstantinople(t *testing.T) {
 		require.Equal(isIceland, evmChainConfig.IsMuirGlacier(evm.Context.BlockNumber))
 		require.Equal(isIceland, chainRules.IsIstanbul)
 
-		// enable Berlin and London
-		isBerlin := g.IsToBeEnabled(e.height)
-		require.Equal(isBerlin, evmChainConfig.IsBerlin(evm.Context.BlockNumber))
-		require.Equal(isBerlin, chainRules.IsBerlin)
-		isLondon := g.IsToBeEnabled(e.height)
-		require.Equal(isLondon, evmChainConfig.IsLondon(evm.Context.BlockNumber))
-		require.Equal(isLondon, chainRules.IsLondon)
-		require.False(evmChainConfig.IsCatalyst(evm.Context.BlockNumber))
-		require.False(chainRules.IsCatalyst)
+		// Okhotsk = enable Berlin and London
+		isOkhotsk := g.IsOkhotsk(e.height)
+		require.Equal(isOkhotsk, evmChainConfig.IsBerlin(evm.Context.BlockNumber))
+		require.Equal(isOkhotsk, chainRules.IsBerlin)
+		require.Equal(isOkhotsk, evmChainConfig.IsLondon(evm.Context.BlockNumber))
+		require.Equal(isOkhotsk, chainRules.IsLondon)
+		require.False(chainRules.IsMerge)
+
+		// test basefee
+		require.Equal(new(big.Int), evm.Context.BaseFee)
 	}
 }
 
@@ -293,8 +318,8 @@ func TestEvmError(t *testing.T) {
 		{errors.New("unknown"), iotextypes.ReceiptStatus_ErrUnknown},
 	}
 	for _, v := range beringTests {
-		r.Equal(evmErrToErrStatusCode(v.evmError, g, g.ToBeEnabledBlockHeight), v.status)
-		r.Equal(evmErrToErrStatusCode(v.evmError, g, g.ToBeEnabledBlockHeight-1), v.status)
+		r.Equal(evmErrToErrStatusCode(v.evmError, g, g.OkhotskBlockHeight), v.status)
+		r.Equal(evmErrToErrStatusCode(v.evmError, g, g.OkhotskBlockHeight-1), v.status)
 		r.Equal(evmErrToErrStatusCode(v.evmError, g, g.JutlandBlockHeight), v.status)
 		r.Equal(evmErrToErrStatusCode(v.evmError, g, g.JutlandBlockHeight-1), v.status)
 		r.Equal(evmErrToErrStatusCode(v.evmError, g, g.BeringBlockHeight), v.status)
@@ -312,8 +337,8 @@ func TestEvmError(t *testing.T) {
 		{errors.New("unknown"), iotextypes.ReceiptStatus_ErrUnknown},
 	}
 	for _, v := range jutlandTests {
-		r.Equal(evmErrToErrStatusCode(v.evmError, g, g.ToBeEnabledBlockHeight), v.status)
-		r.Equal(evmErrToErrStatusCode(v.evmError, g, g.ToBeEnabledBlockHeight-1), v.status)
+		r.Equal(evmErrToErrStatusCode(v.evmError, g, g.OkhotskBlockHeight), v.status)
+		r.Equal(evmErrToErrStatusCode(v.evmError, g, g.OkhotskBlockHeight-1), v.status)
 		r.Equal(evmErrToErrStatusCode(v.evmError, g, g.JutlandBlockHeight), v.status)
 		r.Equal(evmErrToErrStatusCode(v.evmError, g, g.JutlandBlockHeight-1), iotextypes.ReceiptStatus_ErrUnknown)
 		r.Equal(evmErrToErrStatusCode(v.evmError, g, g.BeringBlockHeight), iotextypes.ReceiptStatus_ErrUnknown)
@@ -327,8 +352,8 @@ func TestEvmError(t *testing.T) {
 		{vm.ErrInvalidCode, iotextypes.ReceiptStatus_ErrInvalidCode},
 	}
 	for _, v := range newTests {
-		r.Equal(evmErrToErrStatusCode(v.evmError, g, g.ToBeEnabledBlockHeight), v.status)
-		r.Equal(evmErrToErrStatusCode(v.evmError, g, g.ToBeEnabledBlockHeight-1), iotextypes.ReceiptStatus_ErrUnknown)
+		r.Equal(evmErrToErrStatusCode(v.evmError, g, g.OkhotskBlockHeight), v.status)
+		r.Equal(evmErrToErrStatusCode(v.evmError, g, g.OkhotskBlockHeight-1), iotextypes.ReceiptStatus_ErrUnknown)
 		r.Equal(evmErrToErrStatusCode(v.evmError, g, g.JutlandBlockHeight), iotextypes.ReceiptStatus_ErrUnknown)
 		r.Equal(evmErrToErrStatusCode(v.evmError, g, g.JutlandBlockHeight-1), iotextypes.ReceiptStatus_ErrUnknown)
 		r.Equal(evmErrToErrStatusCode(v.evmError, g, g.BeringBlockHeight), iotextypes.ReceiptStatus_ErrUnknown)
@@ -342,7 +367,7 @@ func TestGasEstimate(t *testing.T) {
 	for _, v := range []struct {
 		gas, consume, refund, size uint64
 	}{
-		{config.Default.Genesis.BlockGasLimit, 8200300, 1000000, 20000},
+		{genesis.Default.BlockGasLimit, 8200300, 1000000, 20000},
 		{1000000, 245600, 100000, 5600},
 		{500000, 21000, 10000, 36},
 	} {

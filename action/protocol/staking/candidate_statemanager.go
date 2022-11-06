@@ -30,17 +30,15 @@ type (
 		delBucket(index uint64) error
 		putBucketAndIndex(bucket *VoteBucket) (uint64, error)
 		delBucketAndIndex(owner, cand address.Address, index uint64) error
-		putBucketIndex(addr address.Address, prefix byte, index uint64) error
-		delBucketIndex(addr address.Address, prefix byte, index uint64) error
 	}
 	// CandidateSet related to setting candidates
 	CandidateSet interface {
-		putCandidate(d *Candidate) error
-		delCandidate(name address.Address) error
-		putVoterBucketIndex(addr address.Address, index uint64) error
-		delVoterBucketIndex(addr address.Address, index uint64) error
-		putCandBucketIndex(addr address.Address, index uint64) error
-		delCandBucketIndex(addr address.Address, index uint64) error
+		putCandidate(*Candidate) error
+		delCandidate(address.Address) error
+		putVoterBucketIndex(address.Address, uint64) error
+		delVoterBucketIndex(address.Address, uint64) error
+		putCandBucketIndex(address.Address, uint64) error
+		delCandBucketIndex(address.Address, uint64) error
 	}
 	// CandidateStateManager is candidate state manager on top of StateManager
 	CandidateStateManager interface {
@@ -55,7 +53,6 @@ type (
 		ContainsSelfStakingBucket(uint64) bool
 		GetByName(string) *Candidate
 		GetByOwner(address.Address) *Candidate
-		GetBySelfStakingIndex(uint64) *Candidate
 		Upsert(*Candidate) error
 		CreditBucketPool(*big.Int) error
 		DebitBucketPool(*big.Int, bool) error
@@ -141,10 +138,6 @@ func (csm *candSM) GetByOwner(addr address.Address) *Candidate {
 	return csm.candCenter.GetByOwner(addr)
 }
 
-func (csm *candSM) GetBySelfStakingIndex(index uint64) *Candidate {
-	return csm.candCenter.GetBySelfStakingIndex(index)
-}
-
 // Upsert writes the candidate into state manager and cand center
 func (csm *candSM) Upsert(d *Candidate) error {
 	if err := csm.candCenter.Upsert(d); err != nil {
@@ -196,7 +189,7 @@ func (csm *candSM) updateBucket(index uint64, bucket *VoteBucket) error {
 
 	_, err := csm.PutState(
 		bucket,
-		protocol.NamespaceOption(StakingNameSpace),
+		protocol.NamespaceOption(_stakingNameSpace),
 		protocol.KeyOption(bucketKey(index)))
 	return err
 }
@@ -205,7 +198,7 @@ func (csm *candSM) putBucket(bucket *VoteBucket) (uint64, error) {
 	var tc totalBucketCount
 	if _, err := csm.State(
 		&tc,
-		protocol.NamespaceOption(StakingNameSpace),
+		protocol.NamespaceOption(_stakingNameSpace),
 		protocol.KeyOption(TotalBucketKey)); err != nil && errors.Cause(err) != state.ErrStateNotExist {
 		return 0, err
 	}
@@ -215,21 +208,21 @@ func (csm *candSM) putBucket(bucket *VoteBucket) (uint64, error) {
 	bucket.Index = index
 	if _, err := csm.PutState(
 		bucket,
-		protocol.NamespaceOption(StakingNameSpace),
+		protocol.NamespaceOption(_stakingNameSpace),
 		protocol.KeyOption(bucketKey(index))); err != nil {
 		return 0, err
 	}
 	tc.count++
 	_, err := csm.PutState(
 		&tc,
-		protocol.NamespaceOption(StakingNameSpace),
+		protocol.NamespaceOption(_stakingNameSpace),
 		protocol.KeyOption(TotalBucketKey))
 	return index, err
 }
 
 func (csm *candSM) delBucket(index uint64) error {
 	_, err := csm.DelState(
-		protocol.NamespaceOption(StakingNameSpace),
+		protocol.NamespaceOption(_stakingNameSpace),
 		protocol.KeyOption(bucketKey(index)))
 	return err
 }
@@ -272,14 +265,14 @@ func (csm *candSM) putBucketIndex(addr address.Address, prefix byte, index uint6
 	)
 	if _, err := csm.State(
 		&bis,
-		protocol.NamespaceOption(StakingNameSpace),
+		protocol.NamespaceOption(_stakingNameSpace),
 		protocol.KeyOption(key)); err != nil && errors.Cause(err) != state.ErrStateNotExist {
 		return err
 	}
 	bis.addBucketIndex(index)
 	_, err := csm.PutState(
 		&bis,
-		protocol.NamespaceOption(StakingNameSpace),
+		protocol.NamespaceOption(_stakingNameSpace),
 		protocol.KeyOption(key))
 	return err
 }
@@ -295,7 +288,7 @@ func (csm *candSM) delBucketIndex(addr address.Address, prefix byte, index uint6
 	)
 	if _, err := csm.State(
 		&bis,
-		protocol.NamespaceOption(StakingNameSpace),
+		protocol.NamespaceOption(_stakingNameSpace),
 		protocol.KeyOption(key)); err != nil {
 		return err
 	}
@@ -304,12 +297,12 @@ func (csm *candSM) delBucketIndex(addr address.Address, prefix byte, index uint6
 	var err error
 	if len(bis) == 0 {
 		_, err = csm.DelState(
-			protocol.NamespaceOption(StakingNameSpace),
+			protocol.NamespaceOption(_stakingNameSpace),
 			protocol.KeyOption(key))
 	} else {
 		_, err = csm.PutState(
 			&bis,
-			protocol.NamespaceOption(StakingNameSpace),
+			protocol.NamespaceOption(_stakingNameSpace),
 			protocol.KeyOption(key))
 	}
 	return err
@@ -320,7 +313,7 @@ func (csm *candSM) delVoterBucketIndex(addr address.Address, index uint64) error
 }
 
 func (csm *candSM) putCandidate(d *Candidate) error {
-	_, err := csm.PutState(d, protocol.NamespaceOption(CandidateNameSpace), protocol.KeyOption(d.Owner.Bytes()))
+	_, err := csm.PutState(d, protocol.NamespaceOption(_candidateNameSpace), protocol.KeyOption(d.Owner.Bytes()))
 	return err
 }
 
@@ -329,7 +322,7 @@ func (csm *candSM) putCandBucketIndex(addr address.Address, index uint64) error 
 }
 
 func (csm *candSM) delCandidate(name address.Address) error {
-	_, err := csm.DelState(protocol.NamespaceOption(CandidateNameSpace), protocol.KeyOption(name.Bytes()))
+	_, err := csm.DelState(protocol.NamespaceOption(_candidateNameSpace), protocol.KeyOption(name.Bytes()))
 	return err
 }
 

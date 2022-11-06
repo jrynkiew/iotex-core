@@ -281,11 +281,12 @@ func addActsToActPool(ctx context.Context, ap actpool.ActPool) error {
 func setupChain(cfg config.Config) (blockchain.Blockchain, blockdao.BlockDAO, blockindex.Indexer, blockindex.BloomFilterIndexer, factory.Factory, actpool.ActPool, *protocol.Registry, string, error) {
 	cfg.Chain.ProducerPrivKey = hex.EncodeToString(identityset.PrivateKey(0).Bytes())
 	registry := protocol.NewRegistry()
-	sf, err := factory.NewFactory(cfg, factory.InMemTrieOption(), factory.RegistryOption(registry))
+	factoryCfg := factory.GenerateConfig(cfg.Chain, cfg.Genesis)
+	sf, err := factory.NewFactory(factoryCfg, db.NewMemKVStore(), factory.RegistryOption(registry))
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, nil, "", err
 	}
-	ap, err := setupActPool(sf, cfg.ActPool)
+	ap, err := setupActPool(cfg.Genesis, sf, cfg.ActPool)
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, nil, "", err
 	}
@@ -309,7 +310,8 @@ func setupChain(cfg config.Config) (blockchain.Blockchain, blockdao.BlockDAO, bl
 	}
 	// create chain
 	bc := blockchain.NewBlockchain(
-		cfg,
+		cfg.Chain,
+		cfg.Genesis,
 		dao,
 		factory.NewMinter(sf, ap),
 		blockchain.BlockValidatorOption(block.NewValidator(
@@ -354,8 +356,8 @@ func setupChain(cfg config.Config) (blockchain.Blockchain, blockdao.BlockDAO, bl
 	return bc, dao, indexer, bfIndexer, sf, ap, registry, testPath, nil
 }
 
-func setupActPool(sf factory.Factory, cfg config.ActPool) (actpool.ActPool, error) {
-	ap, err := actpool.NewActPool(sf, cfg, actpool.EnableExperimentalActions())
+func setupActPool(g genesis.Genesis, sf factory.Factory, cfg actpool.Config) (actpool.ActPool, error) {
+	ap, err := actpool.NewActPool(g, sf, cfg, actpool.EnableExperimentalActions())
 	if err != nil {
 		return nil, err
 	}
@@ -395,12 +397,15 @@ func newConfig() config.Config {
 	cfg.Chain.TrieDBPath = testTriePath
 	cfg.Chain.ChainDBPath = testDBPath
 	cfg.Chain.IndexDBPath = testIndexPath
+	cfg.Chain.EVMNetworkID = _evmNetworkID
 	cfg.System.SystemLogDBPath = testSystemLogPath
 	cfg.Chain.EnableAsyncIndexWrite = false
 	cfg.Genesis.EnableGravityChainVoting = true
 	cfg.ActPool.MinGasPriceStr = "0"
 	cfg.API.RangeQueryLimit = 100
-
+	cfg.API.GRPCPort = 0
+	cfg.API.HTTPPort = 0
+	cfg.API.WebSocketPort = 0
 	return cfg
 }
 
@@ -442,7 +447,7 @@ func createServerV2(cfg config.Config, needActPool bool) (*ServerV2, blockchain.
 func TestServerV2Integrity(t *testing.T) {
 	require := require.New(t)
 	cfg := newConfig()
-	config.SetEVMNetworkID(1)
+	cfg.API.GRPCPort = testutil.RandomPort()
 	svr, _, _, _, _, _, bfIndexFile, err := createServerV2(cfg, false)
 	require.NoError(err)
 	defer func() {

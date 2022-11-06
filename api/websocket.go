@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -27,9 +26,8 @@ const (
 	maxMessageSize = 15 * 1024 * 1024
 )
 
-// WebsocketServer handles requests from websocket protocol
-type WebsocketServer struct {
-	svr        *http.Server
+// WebsocketHandler handles requests from websocket protocol
+type WebsocketHandler struct {
 	msgHandler Web3Handler
 }
 
@@ -38,39 +36,14 @@ var upgrader = websocket.Upgrader{
 	WriteBufferSize: 1024,
 }
 
-// NewWebSocketServer creates a new websocket server
-func NewWebSocketServer(route string, port int, handler Web3Handler) *WebsocketServer {
-	if port == 0 {
-		return nil
+// NewWebsocketHandler creates a new websocket handler
+func NewWebsocketHandler(web3Handler Web3Handler) *WebsocketHandler {
+	return &WebsocketHandler{
+		msgHandler: web3Handler,
 	}
-	svr := &WebsocketServer{
-		svr: &http.Server{
-			Addr: ":" + strconv.Itoa(port),
-		},
-		msgHandler: handler,
-	}
-	mux := http.NewServeMux()
-	mux.Handle("/"+route, svr)
-	svr.svr.Handler = mux
-	return svr
 }
 
-// Start starts the websocket server
-func (wsSvr *WebsocketServer) Start(_ context.Context) error {
-	go func() {
-		if err := wsSvr.svr.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.L().Fatal("Node failed to serve.", zap.Error(err))
-		}
-	}()
-	return nil
-}
-
-// Stop stops the websocket server
-func (wsSvr *WebsocketServer) Stop(ctx context.Context) error {
-	return wsSvr.svr.Shutdown(ctx)
-}
-
-func (wsSvr *WebsocketServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+func (wsSvr *WebsocketHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	upgrader.CheckOrigin = func(_ *http.Request) bool { return true }
 
 	// upgrade this connection to a WebSocket connection
@@ -80,19 +53,23 @@ func (wsSvr *WebsocketServer) ServeHTTP(w http.ResponseWriter, req *http.Request
 		return
 	}
 
-	wsSvr.handleConnection(ws)
+	wsSvr.handleConnection(req.Context(), ws)
 }
 
-func (wsSvr *WebsocketServer) handleConnection(ws *websocket.Conn) {
+func (wsSvr *WebsocketHandler) handleConnection(ctx context.Context, ws *websocket.Conn) {
 	defer ws.Close()
-	ws.SetReadDeadline(time.Now().Add(pongWait))
+	if err := ws.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+		log.Logger("api").Warn("failed to set read deadline timeout.", zap.Error(err))
+	}
 	ws.SetReadLimit(maxMessageSize)
 	ws.SetPongHandler(func(string) error {
-		ws.SetReadDeadline(time.Now().Add(pongWait))
+		if err := ws.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+			log.Logger("api").Warn("failed to set read deadline timeout.", zap.Error(err))
+		}
 		return nil
 	})
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	go ping(ctx, ws, cancel)
 
 	for {
@@ -107,10 +84,12 @@ func (wsSvr *WebsocketServer) handleConnection(ws *websocket.Conn) {
 				return
 			}
 
-			err = wsSvr.msgHandler.HandlePOSTReq(reader,
+			err = wsSvr.msgHandler.HandlePOSTReq(ctx, reader,
 				apitypes.NewResponseWriter(
 					func(resp interface{}) error {
-						ws.SetWriteDeadline(time.Now().Add(writeWait))
+						if err = ws.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
+							log.Logger("api").Warn("failed to set write deadline timeout.", zap.Error(err))
+						}
 						return ws.WriteJSON(resp)
 					}),
 			)
@@ -127,7 +106,9 @@ func ping(ctx context.Context, ws *websocket.Conn, cancel context.CancelFunc) {
 	pingTicker := time.NewTicker(pingPeriod)
 	defer func() {
 		pingTicker.Stop()
-		ws.Close()
+		if err := ws.Close(); err != nil {
+			log.Logger("api").Warn("fail to close websocket connection.", zap.Error(err))
+		}
 	}()
 
 	for {
@@ -135,7 +116,9 @@ func ping(ctx context.Context, ws *websocket.Conn, cancel context.CancelFunc) {
 		case <-ctx.Done():
 			return
 		case <-pingTicker.C:
-			ws.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := ws.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
+				log.Logger("api").Warn("failed to set write deadline timeout.", zap.Error(err))
+			}
 			if err := ws.WriteMessage(websocket.PingMessage, []byte{}); err != nil {
 				log.Logger("api").Warn("fail to respond request.", zap.Error(err))
 				cancel()

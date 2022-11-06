@@ -34,7 +34,9 @@ import (
 	"github.com/iotexproject/iotex-core/actpool"
 	"github.com/iotexproject/iotex-core/blockchain"
 	"github.com/iotexproject/iotex-core/blockchain/blockdao"
+	"github.com/iotexproject/iotex-core/blockchain/genesis"
 	"github.com/iotexproject/iotex-core/config"
+	"github.com/iotexproject/iotex-core/db"
 	"github.com/iotexproject/iotex-core/pkg/probe"
 	"github.com/iotexproject/iotex-core/pkg/unit"
 	"github.com/iotexproject/iotex-core/server/itx"
@@ -348,7 +350,7 @@ func TestLocalTransfer(t *testing.T) {
 	require.NoError(err)
 
 	// Create and start probe server
-	ctx := context.Background()
+	ctx := genesis.WithGenesisContext(context.Background(), cfg.Genesis)
 	probeSvr := probe.New(7788)
 	require.NoError(probeSvr.Start(ctx))
 
@@ -418,7 +420,7 @@ func TestLocalTransfer(t *testing.T) {
 
 			senderAddr1, err := address.FromString(senderAddr)
 			require.NoError(err)
-			newSenderState, _ := accountutil.AccountState(sf, senderAddr1)
+			newSenderState, _ := accountutil.AccountState(ctx, sf, senderAddr1)
 			minusAmount := big.NewInt(0).Sub(tsfTest.senderBalance, tsfTest.amount)
 			gasUnitPayloadConsumed := big.NewInt(0).Mul(big.NewInt(int64(action.TransferPayloadGas)),
 				big.NewInt(int64(len(tsfTest.payload))))
@@ -430,7 +432,7 @@ func TestLocalTransfer(t *testing.T) {
 
 			recvAddr1, err := address.FromString(recvAddr)
 			require.NoError(err)
-			newRecvState, err := accountutil.AccountState(sf, recvAddr1)
+			newRecvState, err := accountutil.AccountState(ctx, sf, recvAddr1)
 			require.NoError(err)
 			expectedRecvrBalance := big.NewInt(0)
 			if tsfTest.recvAcntState == AcntNotRegistered {
@@ -480,7 +482,7 @@ func TestLocalTransfer(t *testing.T) {
 			if tsfTest.senderAcntState == AcntCreate || tsfTest.senderAcntState == AcntExist {
 				senderAddr1, err := address.FromString(senderAddr)
 				require.NoError(err)
-				newSenderState, _ := accountutil.AccountState(sf, senderAddr1)
+				newSenderState, _ := accountutil.AccountState(ctx, sf, senderAddr1)
 				require.Equal(tsfTest.senderBalance.String(), newSenderState.Balance.String())
 			}
 
@@ -543,7 +545,8 @@ func initStateKeyAddr(
 			return nil, "", errors.New("failed to get address")
 		}
 		retAddr = addr.String()
-		existState, err := accountutil.AccountState(sf, addr)
+		ctx := genesis.WithGenesisContext(context.Background(), bc.Genesis())
+		existState, err := accountutil.AccountState(ctx, sf, addr)
 		if err != nil {
 			return nil, "", err
 		}
@@ -645,13 +648,15 @@ func TestEnforceChainID(t *testing.T) {
 	registry := protocol.NewRegistry()
 	acc := account.NewProtocol(rewarding.DepositGas)
 	require.NoError(acc.Register(registry))
-	sf, err := factory.NewFactory(cfg, factory.InMemTrieOption(), factory.RegistryOption(registry))
+	factoryCfg := factory.GenerateConfig(cfg.Chain, cfg.Genesis)
+	sf, err := factory.NewFactory(factoryCfg, db.NewMemKVStore(), factory.RegistryOption(registry))
 	require.NoError(err)
-	ap, err := actpool.NewActPool(sf, cfg.ActPool)
+	ap, err := actpool.NewActPool(cfg.Genesis, sf, cfg.ActPool)
 	require.NoError(err)
 	blkMemDao := blockdao.NewBlockDAOInMemForTest([]blockdao.BlockIndexer{sf})
 	bc := blockchain.NewBlockchain(
-		cfg,
+		cfg.Chain,
+		cfg.Genesis,
 		blkMemDao,
 		factory.NewMinter(sf, ap),
 	)
@@ -680,7 +685,7 @@ func TestEnforceChainID(t *testing.T) {
 		require.NoError(err)
 
 		// simulate API receives tx
-		selp1, err := (&action.Deserializer{}).ActionToSealedEnvelope(selp.Proto())
+		selp1, err := (&action.Deserializer{}).SetEvmNetworkID(cfg.Chain.EVMNetworkID).ActionToSealedEnvelope(selp.Proto())
 		require.NoError(err)
 
 		// mint block using received tx

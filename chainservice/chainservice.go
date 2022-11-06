@@ -8,11 +8,14 @@ package chainservice
 
 import (
 	"context"
+	"strconv"
 
 	"github.com/libp2p/go-libp2p-core/peer"
 	"github.com/pkg/errors"
+	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/iotexproject/iotex-address/address"
 	"github.com/iotexproject/iotex-election/committee"
 	"github.com/iotexproject/iotex-proto/golang/iotexrpc"
 	"github.com/iotexproject/iotex-proto/golang/iotextypes"
@@ -35,6 +38,36 @@ import (
 	"github.com/iotexproject/iotex-core/pkg/log"
 	"github.com/iotexproject/iotex-core/state/factory"
 )
+
+var (
+	_apiCallWithChainIDMtc = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "iotex_apicall_chainid_metrics",
+			Help: "API call ChainID Statistics",
+		},
+		[]string{"chain_id"},
+	)
+	_apiCallWithOutChainIDMtc = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "iotex_apicall_nochainid_metrics",
+			Help: "API call Without ChainID Statistics",
+		},
+		[]string{"sender", "recipient"},
+	)
+	_blockchainFullnessMtc = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "iotex_blockchain_fullness",
+			Help: "Blockchain fullness statistics",
+		},
+		[]string{"message_type"},
+	)
+)
+
+func init() {
+	prometheus.MustRegister(_apiCallWithChainIDMtc)
+	prometheus.MustRegister(_apiCallWithOutChainIDMtc)
+	prometheus.MustRegister(_blockchainFullnessMtc)
+}
 
 // ChainService is a blockchain service with all blockchain components.
 type ChainService struct {
@@ -66,12 +99,13 @@ func (cs *ChainService) Stop(ctx context.Context) error {
 }
 
 // ReportFullness switch on or off block sync
-func (cs *ChainService) ReportFullness(_ context.Context, _ iotexrpc.MessageType, fullness float32) {
+func (cs *ChainService) ReportFullness(_ context.Context, messageType iotexrpc.MessageType, fullness float32) {
+	_blockchainFullnessMtc.WithLabelValues(iotexrpc.MessageType_name[int32(messageType)]).Set(float64(fullness))
 }
 
 // HandleAction handles incoming action request.
 func (cs *ChainService) HandleAction(ctx context.Context, actPb *iotextypes.Action) error {
-	act, err := (&action.Deserializer{}).ActionToSealedEnvelope(actPb)
+	act, err := (&action.Deserializer{}).SetEvmNetworkID(cs.chain.EvmNetworkID()).ActionToSealedEnvelope(actPb)
 	if err != nil {
 		return err
 	}
@@ -80,12 +114,37 @@ func (cs *ChainService) HandleAction(ctx context.Context, actPb *iotextypes.Acti
 	if err != nil {
 		log.L().Debug(err.Error())
 	}
+	chainIDmetrics(act)
 	return err
+}
+
+func chainIDmetrics(act action.SealedEnvelope) {
+	chainID := strconv.FormatUint(uint64(act.ChainID()), 10)
+	if act.ChainID() > 0 {
+		_apiCallWithChainIDMtc.WithLabelValues(chainID).Inc()
+	} else {
+		recipient, _ := act.Destination()
+		//it will be empty for staking action, change string to staking in such case
+		if recipient == "" {
+			act, ok := act.Action().(action.EthCompatibleAction)
+			if ok {
+				if ethTx, err := act.ToEthTx(); err == nil && ethTx.To() != nil {
+					if add, err := address.FromHex(ethTx.To().Hex()); err == nil {
+						recipient = add.String()
+					}
+				}
+			}
+			if recipient == "" {
+				recipient = "staking"
+			}
+		}
+		_apiCallWithOutChainIDMtc.WithLabelValues(act.SenderAddress().String(), recipient).Inc()
+	}
 }
 
 // HandleBlock handles incoming block request.
 func (cs *ChainService) HandleBlock(ctx context.Context, peer string, pbBlock *iotextypes.Block) error {
-	blk, err := (&block.Deserializer{}).FromBlockProto(pbBlock)
+	blk, err := block.NewDeserializer(cs.chain.EvmNetworkID()).FromBlockProto(pbBlock)
 	if err != nil {
 		return err
 	}
@@ -98,13 +157,7 @@ func (cs *ChainService) HandleBlock(ctx context.Context, peer string, pbBlock *i
 
 // HandleSyncRequest handles incoming sync request.
 func (cs *ChainService) HandleSyncRequest(ctx context.Context, peer peer.AddrInfo, sync *iotexrpc.BlockSync) error {
-	return cs.blocksync.ProcessSyncRequest(ctx, sync.Start, sync.End, func(ctx context.Context, blk *block.Block) error {
-		return cs.p2pAgent.UnicastOutbound(
-			ctx,
-			peer,
-			blk.ConvertToBlockPb(),
-		)
-	})
+	return cs.blocksync.ProcessSyncRequest(ctx, peer, sync.Start, sync.End)
 }
 
 // HandleConsensusMsg handles incoming consensus message.

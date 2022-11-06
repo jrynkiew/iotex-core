@@ -9,7 +9,6 @@ package chainservice
 import (
 	"context"
 	"math/big"
-	"math/rand"
 	"time"
 
 	"github.com/iotexproject/iotex-address/address"
@@ -36,7 +35,6 @@ import (
 	"github.com/iotexproject/iotex-core/pkg/log"
 	"github.com/iotexproject/iotex-core/state/factory"
 	"github.com/iotexproject/iotex-election/committee"
-	"github.com/iotexproject/iotex-proto/golang/iotexrpc"
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
@@ -139,31 +137,40 @@ func (builder *Builder) buildFactory(forTest bool) error {
 }
 
 func (builder *Builder) createFactory(forTest bool) (factory.Factory, error) {
+	var dao db.KVStore
+	var err error
 	if builder.cs.factory != nil {
 		return builder.cs.factory, nil
 	}
+	factoryCfg := factory.GenerateConfig(builder.cfg.Chain, builder.cfg.Genesis)
 	if builder.cfg.Chain.EnableTrielessStateDB {
 		if forTest {
-			return factory.NewStateDB(builder.cfg, factory.InMemStateDBOption(), factory.RegistryStateDBOption(builder.cs.registry))
+			return factory.NewStateDB(factoryCfg, db.NewMemKVStore(), factory.RegistryStateDBOption(builder.cs.registry))
 		}
 		opts := []factory.StateDBOption{
 			factory.RegistryStateDBOption(builder.cs.registry),
 			factory.DefaultPatchOption(),
 		}
 		if builder.cfg.Chain.EnableStateDBCaching {
-			opts = append(opts, factory.CachedStateDBOption())
+			dao, err = db.CreateKVStoreWithCache(builder.cfg.DB, builder.cfg.Chain.TrieDBPath, builder.cfg.Chain.StateDBCacheSize)
 		} else {
-			opts = append(opts, factory.DefaultStateDBOption())
+			dao, err = db.CreateKVStore(builder.cfg.DB, builder.cfg.Chain.TrieDBPath)
 		}
-		return factory.NewStateDB(builder.cfg, opts...)
+		if err != nil {
+			return nil, err
+		}
+		return factory.NewStateDB(factoryCfg, dao, opts...)
 	}
 	if forTest {
-		return factory.NewFactory(builder.cfg, factory.InMemTrieOption(), factory.RegistryOption(builder.cs.registry))
+		return factory.NewFactory(factoryCfg, db.NewMemKVStore(), factory.RegistryOption(builder.cs.registry))
 	}
-
+	dao, err = db.CreateKVStore(builder.cfg.DB, builder.cfg.Chain.TrieDBPath)
+	if err != nil {
+		return nil, err
+	}
 	return factory.NewFactory(
-		builder.cfg,
-		factory.DefaultTrieOption(),
+		factoryCfg,
+		dao,
 		factory.RegistryOption(builder.cs.registry),
 		factory.DefaultTriePatchOption(),
 	)
@@ -218,7 +225,7 @@ func (builder *Builder) createElectionCommittee() (committee.Committee, error) {
 
 func (builder *Builder) buildActionPool() error {
 	if builder.cs.actpool == nil {
-		ac, err := actpool.NewActPool(builder.cs.factory, builder.cfg.ActPool)
+		ac, err := actpool.NewActPool(builder.cfg.Genesis, builder.cs.factory, builder.cfg.ActPool)
 		if err != nil {
 			return errors.Wrap(err, "failed to create actpool")
 		}
@@ -250,9 +257,8 @@ func (builder *Builder) buildBlockDAO(forTest bool) error {
 	} else {
 		dbConfig := builder.cfg.DB
 		dbConfig.DbPath = builder.cfg.Chain.ChainDBPath
-		dbConfig.CompressLegacy = builder.cfg.Chain.CompressBlock
-
-		builder.cs.blockdao = blockdao.NewBlockDAO(indexers, dbConfig)
+		deser := block.NewDeserializer(builder.cfg.Chain.EVMNetworkID)
+		builder.cs.blockdao = blockdao.NewBlockDAO(indexers, dbConfig, deser)
 	}
 
 	return nil
@@ -368,7 +374,7 @@ func (builder *Builder) createBlockchain(forSubChain, forTest bool) blockchain.B
 		chainOpts = append(chainOpts, blockchain.BlockValidatorOption(builder.cs.factory))
 	}
 
-	return blockchain.NewBlockchain(builder.cfg, builder.cs.blockdao, factory.NewMinter(builder.cs.factory, builder.cs.actpool), chainOpts...)
+	return blockchain.NewBlockchain(builder.cfg.Chain, builder.cfg.Genesis, builder.cs.blockdao, factory.NewMinter(builder.cs.factory, builder.cs.actpool), chainOpts...)
 }
 
 func (builder *Builder) buildBlockSyncer() error {
@@ -423,33 +429,9 @@ func (builder *Builder) buildBlockSyncer() error {
 			consens.Calibrate(blk.Height())
 			return nil
 		},
-		func(ctx context.Context, start uint64, end uint64, repeat int) {
-			peers, err := p2pAgent.Neighbors(ctx)
-			if err != nil {
-				log.L().Error("failed to get neighbours", zap.Error(err))
-				return
-			}
-			if len(peers) == 0 {
-				log.L().Error("no peers")
-				return
-			}
-			if repeat < 2 {
-				repeat = 2
-			}
-			if repeat > len(peers) {
-				repeat = len(peers)
-			}
-			for i := 0; i < repeat; i++ {
-				peer := peers[rand.Intn(len(peers)-i)]
-				if err := p2pAgent.UnicastOutbound(
-					ctx,
-					peer,
-					&iotexrpc.BlockSync{Start: start, End: end},
-				); err != nil {
-					log.L().Error("failed to request blocks", zap.Error(err), zap.String("peer", peer.ID.Pretty()), zap.Uint64("start", start), zap.Uint64("end", end))
-				}
-			}
-		},
+		p2pAgent.ConnectedPeers,
+		p2pAgent.UnicastOutbound,
+		p2pAgent.BlockPeer,
 	)
 	if err != nil {
 		return errors.Wrap(err, "failed to create block syncer")
@@ -466,7 +448,11 @@ func (builder *Builder) registerStakingProtocol() error {
 	}
 	stakingProtocol, err := staking.NewProtocol(
 		rewarding.DepositGas,
-		builder.cfg.Genesis.Staking,
+		&staking.BuilderConfig{
+			Staking:                  builder.cfg.Genesis.Staking,
+			PersistStakingPatchBlock: builder.cfg.Chain.PersistStakingPatchBlock,
+			StakingPatchDir:          builder.cfg.Chain.StakingPatchDir,
+		},
 		builder.cs.candBucketsIndexer,
 		builder.cfg.Genesis.GreenlandBlockHeight,
 		builder.cfg.Genesis.HawaiiBlockHeight,
@@ -507,7 +493,9 @@ func (builder *Builder) registerRollDPoSProtocol() error {
 	dao := builder.cs.blockdao
 	chain := builder.cs.chain
 	pollProtocol, err := poll.NewProtocol(
-		builder.cfg,
+		builder.cfg.Consensus.Scheme,
+		builder.cfg.Chain,
+		builder.cfg.Genesis,
 		builder.cs.candidateIndexer,
 		func(ctx context.Context, contract string, params []byte, correctGas bool) ([]byte, error) {
 			gasLimit := uint64(1000000)

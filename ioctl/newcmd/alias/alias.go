@@ -13,7 +13,6 @@ import (
 
 	"github.com/iotexproject/iotex-core/ioctl"
 	"github.com/iotexproject/iotex-core/ioctl/config"
-	"github.com/iotexproject/iotex-core/ioctl/util"
 	"github.com/iotexproject/iotex-core/pkg/util/addrutil"
 )
 
@@ -23,19 +22,14 @@ var (
 		config.English: "Manage aliases of IoTeX addresses",
 		config.Chinese: "管理IoTeX的地址别名",
 	}
-	_aliasCmdUses = map[config.Language]string{
-		config.English: "alias",
-		config.Chinese: "alias",
-	}
 )
 
 // NewAliasCmd represents the alias command
 func NewAliasCmd(client ioctl.Client) *cobra.Command {
 	aliasShorts, _ := client.SelectTranslation(_aliasCmdShorts)
-	aliasUses, _ := client.SelectTranslation(_aliasCmdUses)
 
 	ac := &cobra.Command{
-		Use:   aliasUses,
+		Use:   "alias",
 		Short: aliasShorts,
 	}
 
@@ -47,8 +41,8 @@ func NewAliasCmd(client ioctl.Client) *cobra.Command {
 }
 
 // IOAddress returns the address in IoTeX address format
-func IOAddress(in string) (address.Address, error) {
-	addr, err := util.Address(in)
+func IOAddress(client ioctl.Client, in string) (address.Address, error) {
+	addr, err := client.Address(in)
 	if err != nil {
 		return nil, err
 	}
@@ -56,8 +50,8 @@ func IOAddress(in string) (address.Address, error) {
 }
 
 // EtherAddress returns the address in ether format
-func EtherAddress(in string) (common.Address, error) {
-	addr, err := util.Address(in)
+func EtherAddress(client ioctl.Client, in string) (common.Address, error) {
+	addr, err := client.Address(in)
 	if err != nil {
 		return common.Address{}, err
 	}

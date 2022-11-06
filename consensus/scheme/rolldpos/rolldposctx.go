@@ -20,6 +20,7 @@ import (
 
 	"github.com/iotexproject/iotex-core/action/protocol/rolldpos"
 	"github.com/iotexproject/iotex-core/blockchain"
+	"github.com/iotexproject/iotex-core/blockchain/block"
 	"github.com/iotexproject/iotex-core/consensus/consensusfsm"
 	"github.com/iotexproject/iotex-core/consensus/scheme"
 	"github.com/iotexproject/iotex-core/db"
@@ -75,6 +76,7 @@ type rollDPoSCtx struct {
 
 	// TODO: explorer dependency deleted at #1085, need to add api params here
 	chain             ChainManager
+	blockDeserializer *block.Deserializer
 	broadcastHandler  scheme.Broadcast
 	roundCalc         *roundCalculator
 	eManagerDB        db.KVStore
@@ -95,6 +97,7 @@ func newRollDPoSCtx(
 	toleratedOvertime time.Duration,
 	timeBasedRotation bool,
 	chain ChainManager,
+	blockDeserializer *block.Deserializer,
 	rp *rolldpos.Protocol,
 	broadcastHandler scheme.Broadcast,
 	delegatesByEpochFunc DelegatesByEpochFunc,
@@ -142,6 +145,7 @@ func newRollDPoSCtx(
 		encodedAddr:       encodedAddr,
 		priKey:            priKey,
 		chain:             chain,
+		blockDeserializer: blockDeserializer,
 		broadcastHandler:  broadcastHandler,
 		clock:             clock,
 		roundCalc:         roundCalc,
@@ -156,7 +160,7 @@ func (ctx *rollDPoSCtx) Start(c context.Context) (err error) {
 		if err := ctx.eManagerDB.Start(c); err != nil {
 			return errors.Wrap(err, "Error when starting the collectionDB")
 		}
-		eManager, err = newEndorsementManager(ctx.eManagerDB)
+		eManager, err = newEndorsementManager(ctx.eManagerDB, ctx.blockDeserializer)
 	}
 	ctx.round, err = ctx.roundCalc.NewRoundWithToleration(0, ctx.BlockInterval(0), ctx.clock.Now(), eManager, ctx.toleratedOvertime)
 
@@ -482,6 +486,7 @@ func (ctx *rollDPoSCtx) Commit(msg interface{}) (bool, error) {
 	case nil:
 		break
 	default:
+		log.L().Error("error when committing the block", zap.Error(err))
 		return false, errors.Wrap(err, "error when committing a block")
 	}
 	// Broadcast the committed block to the network
@@ -506,14 +511,14 @@ func (ctx *rollDPoSCtx) Commit(msg interface{}) (bool, error) {
 
 	_consensusDurationMtc.WithLabelValues().Set(float64(time.Since(ctx.round.roundStartTime)))
 	if pendingBlock.Height() > 1 {
-		prevBlkHeader, err := ctx.chain.BlockHeaderByHeight(pendingBlock.Height() - 1)
+		prevBlkProposeTime, err := ctx.chain.BlockProposeTime(pendingBlock.Height() - 1)
 		if err != nil {
-			log.L().Error("Error when getting the previous block header.",
+			ctx.logger().Error("Error when getting the previous block header.",
 				zap.Error(err),
 				zap.Uint64("height", pendingBlock.Height()-1),
 			)
 		}
-		_blockIntervalMtc.WithLabelValues().Set(float64(pendingBlock.Timestamp().Sub(prevBlkHeader.Timestamp())))
+		_blockIntervalMtc.WithLabelValues().Set(float64(pendingBlock.Timestamp().Sub(prevBlkProposeTime)))
 	}
 	return true, nil
 }
